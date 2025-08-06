@@ -54,3 +54,6 @@ coverage.xml
 # Logs
 *.log
 logs/
+
+# __pycache__ directories
+**/__pycache__/

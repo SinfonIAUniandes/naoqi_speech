@@ -5,9 +5,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 import qi
 import argparse
 import sys
+import numpy as np
 
 from std_srvs.srv import Trigger
 from naoqi_utilities_msgs.msg import WordConfidence
+from naoqi_bridge_msgs.msg import AudioBuffer
 from naoqi_utilities_msgs.srv import (
     ConfigureSpeech, SetVolume, GetVolume, PlaySound, PlayWebStream, Say
 )
@@ -47,6 +49,7 @@ class NaoqiSpeechNode(Node):
             '~/word_recognized',
             10
         )
+        self.mic_publisher = self.create_publisher(AudioBuffer, '/mic', 10)
 
         # --- ROS2 Services ---
         # ALTextToSpeech & ALSpeakingMovement
@@ -76,7 +79,47 @@ class NaoqiSpeechNode(Node):
         self.word_recognized_subscriber = self.al_memory.subscriber("WordRecognized")
         self.word_recognized_subscriber.signal.connect(self.on_word_recognized)
 
+        # --- NAOqi Audio Service for Microphone ---
+        self.naoqi_audio_service_name = "NaoqiSpeechNode_Audio"
+        self.mic_sample_rate = 16000
+        self._register_audio_service(session)
+
+
         self.get_logger().info("Speech functionalities node is ready.")
+
+    def _register_audio_service(self, session):
+        """
+        Registers a NAOqi service to get the audio stream from the microphones.
+        """
+        try:
+            session.registerService(self.naoqi_audio_service_name, self)
+            # Set client preferences: 16000 Hz, 4 channels (ALL), deinterleaved
+            self.al_audio_device.setClientPreferences(self.naoqi_audio_service_name, self.mic_sample_rate, 3, 0)
+            self.al_audio_device.subscribe(self.naoqi_audio_service_name)
+            self.get_logger().info(f"Successfully subscribed to ALAudioDevice with service name '{self.naoqi_audio_service_name}'.")
+        except Exception as e:
+            self.get_logger().error(f"Failed to register audio service with NAOqi: {e}")
+
+    def processRemote(self, nbOfChannels, nbOfSamples, timeStamp, buffer):
+        """
+        This method is called by NAOqi's ALAudioDevice when new audio data is available.
+        It processes the raw audio buffer and publishes it to a ROS topic.
+        """
+        try:
+            msg = AudioBuffer()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.frequency = self.mic_sample_rate
+            # The channel map can be specified if needed, but is left empty for now.
+            # msg.channel_map = [msg.CHANNEL_FRONT_LEFT, msg.CHANNEL_FRONT_CENTER, msg.CHANNEL_FRONT_RIGHT, msg.CHANNEL_REAR_CENTER]
+            
+            # Convert the raw buffer to a NumPy array of 16-bit integers
+            audio_data = np.frombuffer(buffer, dtype=np.int16)
+            msg.data = audio_data.tolist()
+            
+            self.mic_publisher.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f"Failed to process and publish audio buffer: {e}")
+
 
     # --- Event Callbacks ---
     def on_word_recognized(self, value):
@@ -258,6 +301,16 @@ class NaoqiSpeechNode(Node):
             self.get_logger().error(response.message)
         return response
 
+    def on_shutdown(self):
+        """
+        Called when the node is shutting down. Unsubscribes the audio service.
+        """
+        try:
+            self.al_audio_device.unsubscribe(self.naoqi_audio_service_name)
+            self.get_logger().info("Audio module unsubscribed successfully.")
+        except Exception as e:
+            self.get_logger().warn(f"Error while unsubscribing audio module: {e}")
+
 def main(args=None):
     rclpy.init(args=args)
     parser = argparse.ArgumentParser()
@@ -268,6 +321,12 @@ def main(args=None):
     parsed_args, _ = parser.parse_known_args(args=sys.argv[1:])
 
     session = qi.Session()
+    try:
+        session.listen("tcp://0.0.0.0:0")
+    except RuntimeError as e:
+        rclpy.logging.get_logger('naoqi_speech_node').error(f"Failed to set listen URL: {e}")
+    
+    
     try:
         session.connect(f"tcp://{parsed_args.ip}:{parsed_args.port}")
     except RuntimeError:
@@ -288,6 +347,8 @@ def main(args=None):
     except KeyboardInterrupt:
         print("Closing the speech functionalities node.")
     finally:
+        # Custom shutdown logic
+        naoqi_speech_node.on_shutdown()
         # Shutdown the executor and destroy the node
         executor.shutdown()
         naoqi_speech_node.destroy_node()
