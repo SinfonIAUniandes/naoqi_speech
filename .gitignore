@@ -1,0 +1,56 @@
+# — ROS 2 generated (build/install/devel)
+build/
+install/
+logs/
+devel/
+devel_isolated/
+
+# Message/service Python stubs
+msg/_*.py
+srv/_*.py
+
+# Byte‑compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Packaging / dist
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual envs / configs
+venv/
+.env
+.env.*
+.venv/
+env/**
+ENV/
+venv.bak/
+
+# Test / coverage
+.htmlcov/
+.tox/
+.nox/
+.coverage*
+.cache/
+.nosetests.xml
+coverage.xml
+.pytest_cache/
+
+# IDE & system
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
