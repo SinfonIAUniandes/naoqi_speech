@@ -21,7 +21,6 @@ setup(
     entry_points={
         'console_scripts': [
             'naoqi_speech_node = naoqi_speech.naoqi_speech_node:main',
-            'naoqi_pepper_speech_node = naoqi_speech.naoqi_pepper_speech_node:main',
         ],
     },
 )

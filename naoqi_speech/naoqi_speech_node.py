@@ -9,7 +9,7 @@ import numpy as np
 
 from std_srvs.srv import Trigger
 from naoqi_utilities_msgs.msg import WordConfidence
-from naoqi_bridge_msgs.msg import AudioBuffer
+from naoqi_bridge_msgs.msg import AudioBuffer, Bumper, HandTouch, HeadTouch
 from naoqi_utilities_msgs.srv import (
     ConfigureSpeech, SetVolume, GetVolume, PlaySound, PlayWebStream, Say
 )
@@ -50,6 +50,9 @@ class NaoqiSpeechNode(Node):
             10
         )
         self.mic_publisher = self.create_publisher(AudioBuffer, '/mic', 10)
+        self.bumper_pub = self.create_publisher(Bumper, '/bumper', 10)
+        self.hand_touch_pub = self.create_publisher(HandTouch, '/hand_touch', 10)
+        self.head_touch_pub = self.create_publisher(HeadTouch, '/head_touch', 10)
 
         # --- ROS2 Services ---
         # ALTextToSpeech & ALSpeakingMovement
@@ -76,8 +79,18 @@ class NaoqiSpeechNode(Node):
         self.stop_all_sounds_service = self.create_service(Trigger, '~/stop_all_sounds', self.stop_all_sounds_callback)
 
         # --- NAOqi Event Subscribers ---
-        self.word_recognized_subscriber = self.al_memory.subscriber("WordRecognized")
-        self.word_recognized_subscriber.signal.connect(self.on_word_recognized)
+        # Using subscribeToMicroEvent for compatibility with NAOqi 2.5
+        # The node must be registered as a NAOqi service to receive the callback.
+        # This is done in _register_audio_service.
+        self.al_memory.subscribeToMicroEvent(
+            "WordRecognized",
+            "NaoqiSpeechNode_Audio",
+            "WordRecognized",
+            "on_word_recognized"
+        )
+
+        # Subscribe to touch events
+        self._subscribe_touch_events()
 
         # --- NAOqi Audio Service for Microphone ---
         self.naoqi_audio_service_name = "NaoqiSpeechNode_Audio"
@@ -122,10 +135,11 @@ class NaoqiSpeechNode(Node):
 
 
     # --- Event Callbacks ---
-    def on_word_recognized(self, value):
+    def on_word_recognized(self, key, value, message):
         """
         NAOqi event callback for when a word is recognized.
         Publishes the word and its confidence level.
+        Signature is for subscribeToMicroEvent: (key, value, message)
         """
         if value and len(value) == 2:
             word, confidence = value
@@ -134,6 +148,90 @@ class NaoqiSpeechNode(Node):
             msg.word = word
             msg.confidence = confidence
             self.word_recognized_pub.publish(msg)
+
+    def on_head_touch(self, key, value, message):
+        """NAOqi event callback for head touch sensors."""
+        msg = HeadTouch()
+        if "Front" in key:
+            msg.button = HeadTouch.BUTTON_FRONT
+        elif "Middle" in key:
+            msg.button = HeadTouch.BUTTON_MIDDLE
+        elif "Rear" in key:
+            msg.button = HeadTouch.BUTTON_REAR
+        else:
+            return  # Unknown button
+
+        msg.state = HeadTouch.STATE_PRESSED if value > 0.5 else HeadTouch.STATE_RELEASED
+        self.get_logger().info(f"Head touch event: button={msg.button}, state={msg.state}")
+        self.head_touch_pub.publish(msg)
+
+    def on_hand_touch(self, key, value, message):
+        """NAOqi event callback for hand touch sensors."""
+        msg = HandTouch()
+        if "HandRightBack" in key:
+            msg.hand = HandTouch.RIGHT_BACK
+        elif "HandRightLeft" in key:
+            msg.hand = HandTouch.RIGHT_LEFT
+        elif "HandRightRight" in key:
+            msg.hand = HandTouch.RIGHT_RIGHT
+        elif "HandLeftBack" in key:
+            msg.hand = HandTouch.LEFT_BACK
+        elif "HandLeftLeft" in key:
+            msg.hand = HandTouch.LEFT_LEFT
+        elif "HandLeftRight" in key:
+            msg.hand = HandTouch.LEFT_RIGHT
+        else:
+            return # Unknown hand sensor
+
+        msg.state = HandTouch.STATE_PRESSED if value > 0.5 else HandTouch.STATE_RELEASED
+        self.get_logger().info(f"Hand touch event: hand={msg.hand}, state={msg.state}")
+        self.hand_touch_pub.publish(msg)
+
+    def on_bumper_touch(self, key, value, message):
+        """NAOqi event callback for bumper/feet touch sensors."""
+        msg = Bumper()
+        if "RightBumper" in key:
+            msg.bumper = Bumper.RIGHT
+        elif "LeftBumper" in key:
+            msg.bumper = Bumper.LEFT
+        elif "BackBumper" in key:
+            msg.bumper = Bumper.BACK
+        else:
+            return # Unknown bumper
+
+        msg.state = Bumper.STATE_PRESSED if value > 0.5 else Bumper.STATE_RELEASED
+        self.get_logger().info(f"Bumper event: bumper={msg.bumper}, state={msg.state}")
+        self.bumper_pub.publish(msg)
+
+    def _subscribe_touch_events(self):
+        """Subscribes to all touch-related NAOqi events."""
+        touch_events = {
+            # Head
+            "FrontTactilTouched": "on_head_touch",
+            "MiddleTactilTouched": "on_head_touch",
+            "RearTactilTouched": "on_head_touch",
+            # Hands
+            "HandRightBackTouched": "on_hand_touch",
+            "HandRightLeftTouched": "on_hand_touch",
+            "HandRightRightTouched": "on_hand_touch",
+            "HandLeftBackTouched": "on_hand_touch",
+            "HandLeftLeftTouched": "on_hand_touch",
+            "HandLeftRightTouched": "on_hand_touch",
+            # Bumpers
+            "RightBumperPressed": "on_bumper_touch",
+            "LeftBumperPressed": "on_bumper_touch",
+            "BackBumperPressed": "on_bumper_touch", # Pepper specific
+        }
+        for event, callback_method in touch_events.items():
+            try:
+                self.al_memory.subscribeToMicroEvent(
+                    event,
+                    "NaoqiSpeechNode_Audio",
+                    event, # Message for disambiguation
+                    callback_method
+                )
+            except Exception as e:
+                self.get_logger().warn(f"Could not subscribe to event '{event}': {e}")
 
     # --- Service Callbacks ---
     def say_callback(self, request, response):
