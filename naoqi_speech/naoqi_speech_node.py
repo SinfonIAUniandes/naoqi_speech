@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 import qi
+import time
 import argparse
 import sys
 import numpy as np
@@ -239,32 +240,27 @@ class NaoqiSpeechNode(Node):
         Makes the robot say a text with multiple options.
         This callback can block, but won't freeze the node thanks to the ReentrantCallbackGroup.
         """
-        try:
-            self.get_logger().info(f"Request to say: '{request.text}' [Lang: {request.language}, Animated: {request.animated}, Async: {request.asynchronous}]")
+        self.get_logger().info(f"Request to say: '{request.text}' [Lang: {request.language}, Animated: {request.animated}, Async: {request.asynchronous}]")
 
-            # Set language if it's different from the current one
-            if request.language and request.language != self.language:
-                self.language = request.language
-                self.al_text_to_speech.setLanguage(self.language)
-                self.get_logger().info(f"Language changed to {self.language}")
+        # Set language if it's different from the current one
+        if request.language and request.language != self.al_text_to_speech.getLanguage():
+            self.al_text_to_speech.setLanguage(request.language)
+            self.get_logger().info(f"Language changed to {request.language}")
 
-            speech_service = self.al_animated_speech if request.animated else self.al_text_to_speech
-            self.al_speaking_movement.setEnabled(request.animated)
+        speech_service = self.al_animated_speech if request.animated else self.al_text_to_speech
+        self.al_speaking_movement.setEnabled(request.animated)
 
-            if request.asynchronous:
-                speech_service.say(request.text, _async=True)
-                response.message = "Asynchronous say command sent."
-            else:
-                # This is a blocking call. The ReentrantCallbackGroup and MultiThreadedExecutor
-                # ensure this only blocks the current thread, not the entire node.
-                speech_service.say(request.text)
-                response.message = "Synchronous say command finished."
+        if request.asynchronous:
+            print("entre aqui")
+            speech_service.say(request.text, _async=True)
+            response.message = "Asynchronous say command sent."
+        else:
+            # This is a blocking call. The ReentrantCallbackGroup and MultiThreadedExecutor
+            # ensure this only blocks the current thread, not the entire node.
+            speech_service.say(request.text)
+            response.message = "Synchronous say command finished."
 
-            response.success = True
-        except Exception as e:
-            response.success = False
-            response.message = f"Error in say service: {e}"
-            self.get_logger().error(response.message)
+        response.success = True
             
         return response
 
