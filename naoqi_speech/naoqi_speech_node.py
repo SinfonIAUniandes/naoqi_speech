@@ -6,11 +6,9 @@ import qi
 import time
 import argparse
 import sys
-import numpy as np
 
 from std_srvs.srv import Trigger
 from naoqi_utilities_msgs.msg import WordConfidence
-from naoqi_bridge_msgs.msg import AudioBuffer, Bumper, HandTouch, HeadTouch
 from naoqi_utilities_msgs.srv import (
     ConfigureSpeech, SetVolume, GetVolume, PlaySound, PlayWebStream, Say
 )
@@ -47,37 +45,33 @@ class NaoqiSpeechNode(Node):
         # --- ROS2 Publishers ---
         self.word_recognized_pub = self.create_publisher(
             WordConfidence,
-            '~/word_recognized',
+            'word_recognized',
             10
         )
-        self.mic_publisher = self.create_publisher(AudioBuffer, '/mic', 10)
-        self.bumper_pub = self.create_publisher(Bumper, '/bumper', 10)
-        self.hand_touch_pub = self.create_publisher(HandTouch, '/hand_touch', 10)
-        self.head_touch_pub = self.create_publisher(HeadTouch, '/head_touch', 10)
 
         # --- ROS2 Services ---
         # ALTextToSpeech & ALSpeakingMovement
         # Assign potentially blocking services to the reentrant group
         self.say_service = self.create_service(
-            Say, '~/say', self.say_callback, callback_group=self.reentrant_group
+            Say, 'say', self.say_callback, callback_group=self.reentrant_group
         )
         self.shut_up_service = self.create_service(
-            Trigger, '~/shut_up', self.shut_up_callback, callback_group=self.reentrant_group
+            Trigger, 'shut_up', self.shut_up_callback, callback_group=self.reentrant_group
         )
 
         # ALAudioDevice
-        self.set_volume_service = self.create_service(SetVolume, '~/set_volume', self.set_volume_callback)
-        self.get_volume_service = self.create_service(GetVolume, '~/get_volume', self.get_volume_callback)
+        self.set_volume_service = self.create_service(SetVolume, 'set_volume', self.set_volume_callback)
+        self.get_volume_service = self.create_service(GetVolume, 'get_volume', self.get_volume_callback)
 
         # ALSpeechRecognition
         self.configure_speech_service = self.create_service(
-            ConfigureSpeech, '~/configure_speech', self.configure_speech_callback
+            ConfigureSpeech, 'configure_speech', self.configure_speech_callback
         )
 
         # ALAudioPlayer
-        self.play_sound_service = self.create_service(PlaySound, '~/play_sound', self.play_sound_callback)
-        self.play_web_stream_service = self.create_service(PlayWebStream, '~/play_web_stream', self.play_web_stream_callback)
-        self.stop_all_sounds_service = self.create_service(Trigger, '~/stop_all_sounds', self.stop_all_sounds_callback)
+        self.play_sound_service = self.create_service(PlaySound, 'play_sound', self.play_sound_callback)
+        self.play_web_stream_service = self.create_service(PlayWebStream, 'play_web_stream', self.play_web_stream_callback)
+        self.stop_all_sounds_service = self.create_service(Trigger, 'stop_all_sounds', self.stop_all_sounds_callback)
 
         # --- NAOqi Event Subscribers ---
         # Using subscribeToMicroEvent for compatibility with NAOqi 2.5
@@ -90,49 +84,7 @@ class NaoqiSpeechNode(Node):
             "on_word_recognized"
         )
 
-        # Subscribe to touch events
-        self._subscribe_touch_events()
-
-        # --- NAOqi Audio Service for Microphone ---
-        self.naoqi_audio_service_name = "NaoqiSpeechNode_Audio"
-        self.mic_sample_rate = 16000
-        self._register_audio_service(session)
-
-
         self.get_logger().info("Speech functionalities node is ready.")
-
-    def _register_audio_service(self, session):
-        """
-        Registers a NAOqi service to get the audio stream from the microphones.
-        """
-        try:
-            session.registerService(self.naoqi_audio_service_name, self)
-            # Set client preferences: 16000 Hz, 4 channels (ALL), deinterleaved
-            self.al_audio_device.setClientPreferences(self.naoqi_audio_service_name, self.mic_sample_rate, 3, 0)
-            self.al_audio_device.subscribe(self.naoqi_audio_service_name)
-            self.get_logger().info(f"Successfully subscribed to ALAudioDevice with service name '{self.naoqi_audio_service_name}'.")
-        except Exception as e:
-            self.get_logger().error(f"Failed to register audio service with NAOqi: {e}")
-
-    def processRemote(self, nbOfChannels, nbOfSamples, timeStamp, buffer):
-        """
-        This method is called by NAOqi's ALAudioDevice when new audio data is available.
-        It processes the raw audio buffer and publishes it to a ROS topic.
-        """
-        try:
-            msg = AudioBuffer()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.frequency = self.mic_sample_rate
-            # The channel map can be specified if needed, but is left empty for now.
-            # msg.channel_map = [msg.CHANNEL_FRONT_LEFT, msg.CHANNEL_FRONT_CENTER, msg.CHANNEL_FRONT_RIGHT, msg.CHANNEL_REAR_CENTER]
-            
-            # Convert the raw buffer to a NumPy array of 16-bit integers
-            audio_data = np.frombuffer(buffer, dtype=np.int16)
-            msg.data = audio_data.tolist()
-            
-            self.mic_publisher.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Failed to process and publish audio buffer: {e}")
 
 
     # --- Event Callbacks ---
@@ -149,90 +101,6 @@ class NaoqiSpeechNode(Node):
             msg.word = word
             msg.confidence = confidence
             self.word_recognized_pub.publish(msg)
-
-    def on_head_touch(self, key, value, message):
-        """NAOqi event callback for head touch sensors."""
-        msg = HeadTouch()
-        if "Front" in key:
-            msg.button = HeadTouch.BUTTON_FRONT
-        elif "Middle" in key:
-            msg.button = HeadTouch.BUTTON_MIDDLE
-        elif "Rear" in key:
-            msg.button = HeadTouch.BUTTON_REAR
-        else:
-            return  # Unknown button
-
-        msg.state = HeadTouch.STATE_PRESSED if value > 0.5 else HeadTouch.STATE_RELEASED
-        self.get_logger().info(f"Head touch event: button={msg.button}, state={msg.state}")
-        self.head_touch_pub.publish(msg)
-
-    def on_hand_touch(self, key, value, message):
-        """NAOqi event callback for hand touch sensors."""
-        msg = HandTouch()
-        if "HandRightBack" in key:
-            msg.hand = HandTouch.RIGHT_BACK
-        elif "HandRightLeft" in key:
-            msg.hand = HandTouch.RIGHT_LEFT
-        elif "HandRightRight" in key:
-            msg.hand = HandTouch.RIGHT_RIGHT
-        elif "HandLeftBack" in key:
-            msg.hand = HandTouch.LEFT_BACK
-        elif "HandLeftLeft" in key:
-            msg.hand = HandTouch.LEFT_LEFT
-        elif "HandLeftRight" in key:
-            msg.hand = HandTouch.LEFT_RIGHT
-        else:
-            return # Unknown hand sensor
-
-        msg.state = HandTouch.STATE_PRESSED if value > 0.5 else HandTouch.STATE_RELEASED
-        self.get_logger().info(f"Hand touch event: hand={msg.hand}, state={msg.state}")
-        self.hand_touch_pub.publish(msg)
-
-    def on_bumper_touch(self, key, value, message):
-        """NAOqi event callback for bumper/feet touch sensors."""
-        msg = Bumper()
-        if "RightBumper" in key:
-            msg.bumper = Bumper.RIGHT
-        elif "LeftBumper" in key:
-            msg.bumper = Bumper.LEFT
-        elif "BackBumper" in key:
-            msg.bumper = Bumper.BACK
-        else:
-            return # Unknown bumper
-
-        msg.state = Bumper.STATE_PRESSED if value > 0.5 else Bumper.STATE_RELEASED
-        self.get_logger().info(f"Bumper event: bumper={msg.bumper}, state={msg.state}")
-        self.bumper_pub.publish(msg)
-
-    def _subscribe_touch_events(self):
-        """Subscribes to all touch-related NAOqi events."""
-        touch_events = {
-            # Head
-            "FrontTactilTouched": "on_head_touch",
-            "MiddleTactilTouched": "on_head_touch",
-            "RearTactilTouched": "on_head_touch",
-            # Hands
-            "HandRightBackTouched": "on_hand_touch",
-            "HandRightLeftTouched": "on_hand_touch",
-            "HandRightRightTouched": "on_hand_touch",
-            "HandLeftBackTouched": "on_hand_touch",
-            "HandLeftLeftTouched": "on_hand_touch",
-            "HandLeftRightTouched": "on_hand_touch",
-            # Bumpers
-            "RightBumperPressed": "on_bumper_touch",
-            "LeftBumperPressed": "on_bumper_touch",
-            "BackBumperPressed": "on_bumper_touch", # Pepper specific
-        }
-        for event, callback_method in touch_events.items():
-            try:
-                self.al_memory.subscribeToMicroEvent(
-                    event,
-                    "NaoqiSpeechNode_Audio",
-                    event, # Message for disambiguation
-                    callback_method
-                )
-            except Exception as e:
-                self.get_logger().warn(f"Could not subscribe to event '{event}': {e}")
 
     # --- Service Callbacks ---
     def say_callback(self, request, response):
