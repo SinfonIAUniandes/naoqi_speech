@@ -17,26 +17,22 @@ class NaoqiSpeechNode(Node):
     """
     ROS2 Node to manage speech and audio functionalities of a NAO robot.
     """
-    def __init__(self, session):
+    def __init__(self, session, robot_url=None):
         """
         Initializes the node, NAOqi service clients, ROS2 services, and publishers.
         """
         super().__init__('naoqi_speech_node')
         self.get_logger().info("Initializing NaoqiSpeechNode...")
         self.language = "English" # Default language
+        self.session = session
+        self.robot_url = robot_url
 
         # Create a reentrant callback group to allow parallel execution of long-running services
         self.reentrant_group = ReentrantCallbackGroup()
 
         # --- NAOqi Service Clients ---
         try:
-            self.al_audio_device = session.service("ALAudioDevice")
-            self.al_speech_recognition = session.service("ALSpeechRecognition")
-            self.al_audio_player = session.service("ALAudioPlayer")
-            self.al_text_to_speech = session.service("ALTextToSpeech")
-            self.al_speaking_movement = session.service("ALSpeakingMovement")
-            self.al_animated_speech = session.service("ALAnimatedSpeech")
-            self.al_memory = session.service("ALMemory")
+            self._refresh_naoqi_services()
             self.get_logger().info("NAOqi service clients obtained successfully.")
         except Exception as e:
             self.get_logger().error(f"Could not connect to NAOqi services: {e}")
@@ -86,6 +82,38 @@ class NaoqiSpeechNode(Node):
 
         self.get_logger().info("Speech functionalities node is ready.")
 
+    def _ensure_session_connected(self):
+        if self.session.isConnected():
+            return True
+        if not self.robot_url:
+            return False
+        self.get_logger().warn("NAOqi session is disconnected. Attempting to reconnect...")
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        try:
+            self.session.connect(self.robot_url)
+            self.get_logger().info("NAOqi session reconnected.")
+            return True
+        except Exception as e:
+            self.get_logger().warn(f"Could not reconnect NAOqi session: {e}")
+            return False
+
+    def _service(self, name):
+        if not self._ensure_session_connected():
+            raise RuntimeError("NAOqi session is not connected")
+        return self.session.service(name)
+
+    def _refresh_naoqi_services(self):
+        self.al_audio_device = self._service("ALAudioDevice")
+        self.al_speech_recognition = self._service("ALSpeechRecognition")
+        self.al_audio_player = self._service("ALAudioPlayer")
+        self.al_text_to_speech = self._service("ALTextToSpeech")
+        self.al_speaking_movement = self._service("ALSpeakingMovement")
+        self.al_animated_speech = self._service("ALAnimatedSpeech")
+        self.al_memory = self._service("ALMemory")
+
 
     # --- Event Callbacks ---
     def on_word_recognized(self, key, value, message):
@@ -111,29 +139,33 @@ class NaoqiSpeechNode(Node):
         self.get_logger().info(f"Request to say: '{request.text}' [Lang: {request.language}, Animated: {request.animated}, Async: {request.asynchronous}]")
 
         # Set language if it's different from the current one
-        if request.language and request.language != self.al_text_to_speech.getLanguage():
-            self.al_text_to_speech.setLanguage(request.language)
-            self.get_logger().info(f"Language changed to {request.language}")
+        try:
+            self._refresh_naoqi_services()
+            if request.language and request.language != self.al_text_to_speech.getLanguage():
+                self.al_text_to_speech.setLanguage(request.language)
+                self.get_logger().info(f"Language changed to {request.language}")
 
-        speech_service = self.al_animated_speech if request.animated else self.al_text_to_speech
-        self.al_speaking_movement.setEnabled(request.animated)
+            speech_service = self.al_animated_speech if request.animated else self.al_text_to_speech
+            self.al_speaking_movement.setEnabled(request.animated)
 
-        if request.asynchronous:
-            print("entre aqui")
-            speech_service.say(request.text, _async=True)
-            response.message = "Asynchronous say command sent."
-        else:
-            # This is a blocking call. The ReentrantCallbackGroup and MultiThreadedExecutor
-            # ensure this only blocks the current thread, not the entire node.
-            speech_service.say(request.text)
-            response.message = "Synchronous say command finished."
+            if request.asynchronous:
+                speech_service.say(request.text, _async=True)
+                response.message = "Asynchronous say command sent."
+            else:
+                speech_service.say(request.text)
+                response.message = "Synchronous say command finished."
 
-        response.success = True
+            response.success = True
+        except Exception as e:
+            response.success = False
+            response.message = f"Error in say service: {e}"
+            self.get_logger().error(response.message)
             
         return response
 
     def shut_up_callback(self, request, response):
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info("Request to stop all speech.")
             self.al_text_to_speech.stopAll()
             response.success = True
@@ -146,6 +178,7 @@ class NaoqiSpeechNode(Node):
 
     def set_volume_callback(self, request, response):
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info(f"Request to set volume to {request.volume}.")
             self.al_audio_device.setOutputVolume(request.volume)
             response.success = True
@@ -158,6 +191,7 @@ class NaoqiSpeechNode(Node):
 
     def get_volume_callback(self, request, response):
         try:
+            self._refresh_naoqi_services()
             volume = self.al_audio_device.getOutputVolume()
             self.get_logger().info(f"Current volume is {volume}.")
             response.volume = volume
@@ -170,6 +204,7 @@ class NaoqiSpeechNode(Node):
         Unified callback to configure speech recognition settings.
         """
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info("Request to configure speech.")
             
             # Pause recognition to apply changes safely
@@ -225,6 +260,7 @@ class NaoqiSpeechNode(Node):
         Plays a single audio file located on the robot's file system.
         """
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info(f"Request to play sound file: {request.file_path}")
             self.al_audio_player.playFile(request.file_path)
             response.success = True
@@ -240,6 +276,7 @@ class NaoqiSpeechNode(Node):
         Plays an audio stream from a URL asynchronously, returning immediately.
         """
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info(f"Request to play web stream asynchronously: {request.url}")
             # Call with _async=True to make it non-blocking
             self.al_audio_player.playWebStream(request.url, 1.0, 0.0, _async=True)
@@ -253,6 +290,7 @@ class NaoqiSpeechNode(Node):
 
     def stop_all_sounds_callback(self, request, response):
         try:
+            self._refresh_naoqi_services()
             self.get_logger().info("Request to stop all audio player sounds.")
             self.al_audio_player.stopAll()
             response.success = True
@@ -283,6 +321,7 @@ def main(args=None):
     parsed_args, _ = parser.parse_known_args(args=sys.argv[1:])
 
     session = qi.Session()
+    robot_url = f"tcp://{parsed_args.ip}:{parsed_args.port}"
     try:
         session.listen("tcp://0.0.0.0:0")
     except RuntimeError as e:
@@ -290,13 +329,13 @@ def main(args=None):
     
     
     try:
-        session.connect(f"tcp://{parsed_args.ip}:{parsed_args.port}")
+        session.connect(robot_url)
     except RuntimeError:
         print(f"Can't connect to Naoqi at ip \"{parsed_args.ip}\" on port {parsed_args.port}.\n"
               "Please check your script arguments. Run with -h option for help.")
         sys.exit(1)
 
-    naoqi_speech_node = NaoqiSpeechNode(session)
+    naoqi_speech_node = NaoqiSpeechNode(session, robot_url)
     
     # Use a MultiThreadedExecutor to handle callbacks in parallel.
     # num_threads can be adjusted based on expected concurrent calls.
